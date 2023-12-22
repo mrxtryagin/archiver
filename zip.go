@@ -420,8 +420,8 @@ func autoChoiceCharset(input string, charsets ...string) (string, error) {
 			return charset, nil
 		}
 	}
-	// not find only return first
-	return charsets[0], nil
+	// not find return ""
+	return "", nil
 }
 
 var zipHeader = []byte("PK\x03\x04") // NOTE: headers of empty zip files might end with 0x05,0x06 or 0x06,0x06 instead of 0x03,0x04
