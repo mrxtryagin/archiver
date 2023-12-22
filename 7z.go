@@ -101,20 +101,26 @@ func (z SevenZip) Extract(ctx context.Context, sourceArchive io.Reader, pathsInA
 		}
 
 		err := handleFile(ctx, file)
-		if errors.Is(err, fs.SkipDir) {
-			// if a directory, skip this path; if a file, skip the folder path
-			dirPath := f.Name
-			if !file.IsDir() {
-				dirPath = path.Dir(f.Name) + "/"
+		if err != nil {
+			if errors.Is(err, fs.SkipDir) {
+				// if a directory, skip this path; if a file, skip the folder path
+				dirPath := f.Name
+				if !file.IsDir() {
+					dirPath = path.Dir(f.Name) + "/"
+				}
+				skipDirs.add(dirPath)
+			} else if errors.Is(err, fs.SkipAll) {
+				//skipAll break
+				break
+			} else {
+				if z.ContinueOnError {
+					log.Printf("[ERROR] %s: %v", f.Name, err)
+					continue
+				}
+				return fmt.Errorf("handling file %d: %s: %w", i, f.Name, err)
 			}
-			skipDirs.add(dirPath)
-		} else if err != nil {
-			if z.ContinueOnError {
-				log.Printf("[ERROR] %s: %v", f.Name, err)
-				continue
-			}
-			return fmt.Errorf("handling file %d: %s: %w", i, f.Name, err)
 		}
+
 	}
 
 	return nil

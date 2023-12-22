@@ -10,6 +10,7 @@ import (
 	"log"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/dsnet/compress/bzip2"
 	"github.com/klauspost/compress/zip"
@@ -79,6 +80,9 @@ type Zip struct {
 	// encoded filenames and comments, specify the character
 	// encoding here.
 	TextEncoding string
+
+	// A list of TextEncoding to choice to decode text
+	TextEncodingCandidates []string
 }
 
 func (z Zip) Name() string { return ".zip" }
@@ -219,19 +223,24 @@ func (z Zip) Extract(ctx context.Context, sourceArchive io.Reader, pathsInArchiv
 		}
 
 		err := handleFile(ctx, file)
-		if errors.Is(err, fs.SkipDir) {
-			// if a directory, skip this path; if a file, skip the folder path
-			dirPath := f.Name
-			if !file.IsDir() {
-				dirPath = path.Dir(f.Name) + "/"
+		if err != nil {
+			if errors.Is(err, fs.SkipDir) {
+				// if a directory, skip this path; if a file, skip the folder path
+				dirPath := f.Name
+				if !file.IsDir() {
+					dirPath = path.Dir(f.Name) + "/"
+				}
+				skipDirs.add(dirPath)
+			} else if errors.Is(err, fs.SkipAll) {
+				//skipAll break
+				break
+			} else {
+				if z.ContinueOnError {
+					log.Printf("[ERROR] %s: %v", f.Name, err)
+					continue
+				}
+				return fmt.Errorf("handling file %d: %s: %w", i, f.Name, err)
 			}
-			skipDirs.add(dirPath)
-		} else if err != nil {
-			if z.ContinueOnError {
-				log.Printf("[ERROR] %s: %v", f.Name, err)
-				continue
-			}
-			return fmt.Errorf("handling file %d: %s: %w", i, f.Name, err)
 		}
 	}
 
@@ -242,15 +251,31 @@ func (z Zip) Extract(ctx context.Context, sourceArchive io.Reader, pathsInArchiv
 // It is a no-op if the text is already UTF-8 encoded or if z.TextEncoding
 // is not specified.
 func (z Zip) decodeText(hdr *zip.FileHeader) {
-	if hdr.NonUTF8 && z.TextEncoding != "" {
-		filename, err := decodeText(hdr.Name, z.TextEncoding)
-		if err == nil {
-			hdr.Name = filename
+	if hdr.NonUTF8 {
+		var charset string
+		if z.TextEncoding != "" {
+			charset = z.TextEncoding
+		} else {
+			if len(z.TextEncodingCandidates) > 0 {
+				// judge first
+				if charsetDecodeJudge(hdr.Name) {
+					return
+				}
+				//use Candidates to choice charset
+				charset, _ = autoChoiceCharset(hdr.Name, z.TextEncodingCandidates...)
+			}
 		}
-		if hdr.Comment != "" {
-			comment, err := decodeText(hdr.Comment, z.TextEncoding)
+
+		if charset != "" {
+			filename, err := decodeText(hdr.Name, charset)
 			if err == nil {
-				hdr.Comment = comment
+				hdr.Name = filename
+			}
+			if hdr.Comment != "" {
+				comment, err := decodeText(hdr.Comment, charset)
+				if err == nil {
+					hdr.Comment = comment
+				}
 			}
 		}
 	}
@@ -374,6 +399,29 @@ func decodeText(input, charset string) (string, error) {
 		return enc.NewDecoder().String(input)
 	}
 	return "", fmt.Errorf("unrecognized charset %s", charset)
+}
+
+// charsetDecodeJudge judge charset decode
+// ok return true otherwise return false
+func charsetDecodeJudge(decodedText string) bool {
+	return !strings.ContainsRune(decodedText, utf8.RuneError)
+}
+
+func autoChoiceCharset(input string, charsets ...string) (string, error) {
+	if len(charsets) <= 0 {
+		return "", nil
+	}
+	for _, charset := range charsets {
+		decoded, err := decodeText(input, charset)
+		if err != nil {
+			return "", err
+		}
+		if charsetDecodeJudge(decoded) {
+			return charset, nil
+		}
+	}
+	// not find only return first
+	return charsets[0], nil
 }
 
 var zipHeader = []byte("PK\x03\x04") // NOTE: headers of empty zip files might end with 0x05,0x06 or 0x06,0x06 instead of 0x03,0x04
